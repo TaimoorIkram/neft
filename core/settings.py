@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     
     # Our apps
     'base',
+    'fund_tracking',
 ]
 
 MIDDLEWARE = [
