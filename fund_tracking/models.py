@@ -9,6 +9,11 @@ class TransactionModes(models.TextChoices):
   ONLINE = ("online", "Online")
   CASH = ("cash", "Cash")
     
+class TransactionVerificationState(models.TextChoices):
+  PENDING = ("pending", "Pending")
+  VERIFIED = ("verified", "Verified")
+  REJECTED = ("rejected", "Rejected")
+    
 class TransactionCycleState(models.TextChoices):
   INITIATED = ("initiated", "Initiated")
   PROCESSING = ("forwarded", "Forwarded")
@@ -18,10 +23,18 @@ class OnlineTransactionState(models.TextChoices):
   PENDING = ("pending", "Pending")
   VERIFIED = ("verified", "Verified")
   REJECTED = ("rejected", "Rejected")
+  
+class BankOptions(models.TextChoices):
+  SADAPAY = ("sadapay", "SadaPay")
+  EASYPAISA = ("easypaisa", "EasyPaisa")
+  JAZZCASH = ("jazzcash", "JazzCash")
+  HBL = ("hbl", "Habib Bank Limited")
+  MEEZAN = ("meezan", "Meezan Bank Limited")
 
 # Create your models here.
 class ProofScreenshot(models.Model):
   image = models.ImageField(upload_to='screenshots/')
+  transaction = models.ForeignKey("Transaction", on_delete=models.CASCADE, null=True)
   user = models.ForeignKey(get_user_model(), on_delete=models.CASCADE)
   date_created = models.DateTimeField(auto_now_add=True)
     
@@ -67,6 +80,13 @@ class Transaction(models.Model):
   The state of the funds; a flag that keeps a check of whether
   the funds have entered the cycle, reached their destination or
   not.
+  """
+  
+  verification_state = models.TextField(choices=TransactionVerificationState, default=TransactionVerificationState.PENDING)
+  """
+  Once the initial transaction is added, it has to be approved 
+  or disapproved by the receiver before it is added to the transaction 
+  forwarding cycle.
   """
   
   created = models.DateTimeField(auto_now_add=True)
@@ -125,10 +145,18 @@ class BankDetails(models.Model):
   The name of the account holder. Should be the exact name of the holder.
   """
   
+  bank = models.TextField(choices=BankOptions, default=BankOptions.SADAPAY)
+  """
+  The bank from where this account operates.
+  """
+  
   is_active = models.BooleanField(default=True)
   """
   Only one account must be active at a time, set all others to false.
   """
+  
+  def __str__(self):
+    return ' '.join([self.account_title, f'({self.account_number})', '@', self.bank])
     
 class OnlineTransaction(models.Model):
   """
