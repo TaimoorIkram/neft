@@ -1,7 +1,7 @@
 from django.db import models
 from django.contrib.auth import get_user_model
 
-from base.models import NEFTStudentUser
+from base.models import NEFTAbstractUser, NEFTStudentUser
 from fund_tracking.validators import validate_iban
 
 # Create your enums here
@@ -16,7 +16,7 @@ class TransactionVerificationState(models.TextChoices):
     
 class TransactionCycleState(models.TextChoices):
   INITIATED = ("initiated", "Initiated")
-  PROCESSING = ("forwarded", "Forwarded")
+  PROCESSING = ("forwarded", "Forwarded") # TODO: set to processing
   COMPLETED = ("completed", "Completed")
   
 class OnlineTransactionState(models.TextChoices):
@@ -89,6 +89,12 @@ class Transaction(models.Model):
   forwarding cycle.
   """
   
+  rejection_details = models.TextField(max_length=500, default="")
+  """
+  In case the transaction is rejected, set this value as a reason 
+  of rejection of the transaction.
+  """
+  
   created = models.DateTimeField(auto_now_add=True)
   updated = models.DateTimeField(auto_now=True)
   
@@ -104,12 +110,12 @@ class ForwardedTransaction(models.Model):
   A transaction can only be forwarded by a non-student user.
   """
   
-  transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE)
+  transactions = models.ManyToManyField(Transaction, related_name="forwarded_transactions")
   """
   The original `Transaction` that is being tracked.
   """
   
-  previous_transaction = models.ForeignKey("ForwardedTransaction", on_delete=models.SET_NULL, null=True, default=None)
+  previous_transactions = models.ManyToManyField("ForwardedTransaction", related_name="previous_forwarded_transactions", default=[])
   """
   A `ForwardedTransaction` event that took place before this one.
   """
@@ -124,6 +130,12 @@ class ForwardedTransaction(models.Model):
   The person being forwarded the cash.
   """
   
+  forwarded_amount = models.IntegerField(default=0)
+  """
+  The total amount forwarded as a part of this forwarded transaction.
+  """
+  
+  is_forwarded = models.BooleanField(default=False)
   created = models.DateTimeField(auto_now_add=True)
   is_verified_by_forwardee = models.BooleanField(default=False)
   # sender_role = ???

@@ -1,11 +1,12 @@
 from django.core.exceptions import ValidationError
 from django.shortcuts import render
+from django.db.models import Q
 
 from base.models import NEFTStudentUser
 from .serializers import NEFTStudentUserSerializer
 from fund_tracking.permissions import IsNotStudentUser
 
-from .models import BankDetails, ForwardedTransaction, ProofScreenshot, Transaction, TransactionModes
+from .models import BankDetails, ForwardedTransaction, ProofScreenshot, Transaction, TransactionCycleState, TransactionModes
 from .serializers import BankDetailsSerializer, ForwardedTransactionSerializer, ProofScreenshotSerialzer, TransactionSerializer
 
 from rest_framework.generics import ListCreateAPIView, CreateAPIView, ListAPIView, DestroyAPIView, RetrieveAPIView, RetrieveUpdateDestroyAPIView
@@ -64,7 +65,7 @@ class ListCreateTransactionsView(ListCreateAPIView):
         return super().create(request, *args, **kwargs)
     
     def get_queryset(self):
-        return self.queryset.filter(sender__user=self.request.user)
+        return self.queryset.filter(Q(sender__user=self.request.user) | Q(receiver__user=self.request.user))
     
 class RetrieveUpdateDestroyTransactionView(RetrieveUpdateDestroyAPIView):
     queryset = Transaction.objects.all()
@@ -75,31 +76,74 @@ class CreateForwardedTransactionView(CreateAPIView):
     queryset = ForwardedTransaction.objects.all()
     serializer_class = ForwardedTransactionSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def perform_create(self, serializer):
-        pervious_forwarded_transaction = self.queryset.filter(transaction__id=self.request.data['transaction_id']).order_by("-created").first() or None
+        transactions_ids = self.request.data.get('transactions_ids', [])
+        previous_transactions_ids = self.request.data.get('previous_transactions_ids', [])
+        forwarder = NEFTStudentUser.objects.get(user=self.request.user)
+
+        # Get latest forwarded transaction where any transaction in the list was previously forwarded
+        previous_forwarded = (
+            self.queryset
+            .filter(transactions__id__in=previous_transactions_ids)
+            .order_by('-created')
+            .first()
+        )
 
         serializer.save(
-            forwarder = NEFTStudentUser.objects.get(user=self.request.user),
-            previous_transaction=pervious_forwarded_transaction
+            forwarder=forwarder,
         )
-    
+        
+        if self.request.user.groups.filter(name="CR").exists():
+            transactions = Transaction.objects.filter(id__in=transactions_ids)
+            for transaction in transactions:
+                transaction.state = TransactionCycleState.PROCESSING
+                transaction.save()
+        elif self.request.user.groups.filter(name__in=["BP", "NSFT"]).exists():
+            previous_transactions = self.queryset.filter(id__in=previous_transactions_ids)
+            for previous_transaction in previous_transactions:
+                previous_transaction.is_forwarded = True
+                previous_transaction.save()
+
     def create(self, request, *args, **kwargs):
-        if self.queryset.filter(forwarder__user=self.request.user, transaction__id=self.request.data["transaction_id"]).count() != 0: 
-            return Response(data={"message": "You have already forwarded this transaction!"}, status=status.HTTP_400_BAD_REQUEST)
-        if not self.queryset.filter(transaction__id=self.request.data["transaction_id"]).order_by("-created").first().forwardee.user != self.request.user:
-            return Response(data={"message": "This transaction has not been forwarded to you yet!"}, status=status.HTTP_400_BAD_REQUEST)
+        user = request.user
+        transactions_ids = request.data.get("transactions_ids", [])
+
+        # Ensure the user hasn't already forwarded *any* of the transactions
+        existing_forward = self.queryset.filter(
+            forwarder__user=user,
+            transactions__id__in=transactions_ids
+        ).exists()
+
+        if existing_forward:
+            return Response(
+                {"message": "You have already forwarded one or more of these transactions!"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Ensure at least one transaction was forwarded *to* this user previously
+        latest_forward = (
+            self.queryset
+            .filter(transactions__id__in=transactions_ids)
+            .order_by("-created")
+            .first()
+        )
+
+        if "previous_transactions_ids" in self.request.data.keys() and (not latest_forward or latest_forward.forwardee.user != user):
+            return Response(
+                {"message": "This transaction has not been forwarded to you yet!"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         return super().create(request, *args, **kwargs)
     
 class ListForwardedTransactionsForTransactionView(ListAPIView):
-    queryset = ForwardedTransaction.objects.all()
     serializer_class = ForwardedTransactionSerializer
     permission_classes = [IsAuthenticated]
-    
-    def list(self, request, pk, *args, **kwargs):
-        forwarded_transactions = self.queryset.filter(transaction__id=pk).order_by("-created")
-        forwarded_transactions_serialized = self.serializer_class(forwarded_transactions, many=True)
-        return Response(data=forwarded_transactions_serialized.data, status=status.HTTP_200_OK)
+
+    def get_queryset(self):
+        transaction_id = self.kwargs.get("pk")
+        return ForwardedTransaction.objects.filter(transactions__id__contains=transaction_id).order_by("-created")
     
 class RetrieveBankDetailsView(RetrieveAPIView):
     queryset = BankDetails.objects.all()
@@ -114,3 +158,28 @@ class ListMyClassStudentsView(ListAPIView):
     def get_queryset(self):
         student = NEFTStudentUser.objects.get(user=self.request.user)
         return NEFTStudentUser.objects.filter(student_class=student.student_class, class_section=student.class_section)
+    
+class ListMyForwardedTransactions(ListAPIView):
+    queryset = ForwardedTransaction.objects.all()
+    permission_classes = [IsAuthenticated]
+    serializer_class = ForwardedTransactionSerializer
+    
+    def get_queryset(self):
+        return self.queryset.filter(forwardee__user=self.request.user)
+    
+class RetrieveUpdateDestroyForwardedTransactionView(RetrieveUpdateDestroyAPIView):
+    queryset = ForwardedTransaction.objects.all()
+    permission_classes = [IsAuthenticated]
+    serializer_class = ForwardedTransactionSerializer
+    
+    def update(self, request, pk, *args, **kwargs):
+        if "is_verified_by_forwardee" in self.request.data.keys() and self.request.user.groups.filter(name="NSFT").exists():
+            forwarded_transaction = self.queryset.get(id=pk)
+            transactions = Transaction.objects.filter(id__in=[transaction.id for transaction in forwarded_transaction.transactions.all()])
+            for transaction in transactions:
+                transaction.state = TransactionCycleState.COMPLETED
+                transaction.save()
+            
+            print("Transactions marked complete!")
+
+        return super().update(request, *args, **kwargs)

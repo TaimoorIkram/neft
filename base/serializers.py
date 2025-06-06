@@ -1,12 +1,17 @@
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import NEFTAbstractUser, NEFTStudentUser
-from rest_framework.serializers import ModelSerializer
+from rest_framework.serializers import ModelSerializer, SerializerMethodField
 
 class NEFTAbstractUserSerializer(ModelSerializer):
+    groups = SerializerMethodField()
+    
     class Meta:
         model = NEFTAbstractUser
-        fields = ('id', 'username', 'email', 'first_name', 'last_name')
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'groups')
+        
+    def get_groups(self, obj):
+        return list(obj.groups.values_list('name', flat=True))
 
 class NEFTStudentUserSerializer(ModelSerializer):
     class Meta:
